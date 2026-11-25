@@ -86,4 +86,9 @@ function contestStackMetadataApi() {
   };
 }
 
-export default defineConfig({ plugins: [react(), contestStackMetadataApi()] });
+export default defineConfig({
+  plugins: [react(), contestStackMetadataApi()],
+  preview: {
+    allowedHosts: ['contest-stack.onrender.com']
+  }
+});
