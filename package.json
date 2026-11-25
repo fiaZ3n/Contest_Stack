@@ -4,9 +4,9 @@
   "version": "2.0.2",
   "type": "module",
   "scripts": {
-    "dev": "vite --host",
-    "build": "vite build --host",
-    "preview": "vite preview --host",
+    "dev": "vite"
+    "build": "vite build ",
+    "preview": "vite preview ",
     "check:server": "node --check vite.config.js && node --check src/services/problemGenerator.js && node --check src/utils/problemUrl.js"
   },
   "dependencies": {
