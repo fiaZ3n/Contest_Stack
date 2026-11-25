@@ -1,24 +1,114 @@
 # Contest Stack
 
-Contest Stack is a responsive competitive-programming practice workspace for creating and joining Codeforces/AtCoder practice contests.
+**Version:** 2.1.2 (Render-ready)  
+A responsive competitive-programming practice workspace for creating and joining Codeforces/AtCoder practice contests.
 
-**Current version: 2.0.2**
+## Problem statements: server-side crawler
 
-## Problem-opening behavior
+The Problem tab now uses a server-side crawler and renders the statement inside Contest Stack. It does not put the full Codeforces/AtCoder website in an iframe.
 
-Contest Stack does **not** show an in-app statement preview, crawl problem pages, or embed Codeforces/AtCoder in an iframe. In the Problem, Overview and Status tabs, clicking **Open original problem** opens the canonical official judge URL in a new browser tab. The Contest Stack tab remains open, so the timer and contest list stay available.
+Crawler order:
 
-- Codeforces links use `https://codeforces.com/contest/{contestId}/problem/{index}`.
-- AtCoder links use `https://atcoder.jp/contests/{contestId}/tasks/{contestId}_{taskIndex}`.
-- Links are validated to use HTTPS and the official platform hostname.
-- If a valid URL cannot be built, the action is disabled and shows **Original link unavailable**.
+1. **Firecrawl Cloud (recommended and required for managed anti-bot proxying):** when `FIRECRAWL_API_KEY` is configured, the Vite server calls `POST https://api.firecrawl.dev/v2/scrape` with `formats: ["rawHtml"]` and `proxy: "auto"`. Firecrawl documents that `auto` retries with its enhanced proxy when the basic proxy fails. Codeforces official and mirror URLs are tried. The API key stays on the server and is never exposed to React.
+2. **Local Playwright browser:** if Firecrawl is not configured or fails, the Vite server launches Chrome/Chromium through Playwright and reads only the judge's problem-statement container.
+3. **Basic server HTML request:** a final direct request is attempted. If all sources fail, the UI shows a bounded diagnostic and the official-page link.
 
-## Run locally
+A server-side crawler avoids browser CORS restrictions, but it does not automatically bypass anti-bot protection. A normal Node/Playwright request can still receive HTTP 403. For Codeforces pages that block ordinary requests, configure Firecrawl Cloud: its managed `proxy: "auto"` mode can retry with an enhanced proxy. This requires your own Firecrawl API key and may consume account credits. If you do not configure the key, the app still tries local Playwright and direct server HTML, but Codeforces may continue to return 403. No crawler can guarantee access if the target blocks the crawler provider too.
 
-Requirements: Node.js supported by Vite 6 and npm.
+### Configure Firecrawl (recommended)
+
+1. Create a Firecrawl account and copy an API key from its dashboard.
+2. In the project root, copy `.env.example` to `.env`.
+3. Add your key:
+
+```env
+FIRECRAWL_API_KEY=fc-your-key-here
+```
+
+4. Keep `.env` private. Do not rename the variable to `VITE_FIRECRAWL_API_KEY`, and do not commit `.env` to Git.
+5. Restart the Vite server after editing `.env`.
+
+Firecrawl API reference: https://docs.firecrawl.dev/api-reference/endpoint/scrape
+
+### Install the local browser crawler
 
 ```bash
 npm install
+npm run setup:crawler
+```
+
+This downloads the Chromium browser used by Playwright. If Google Chrome is installed, Contest Stack tries it first and then falls back to Playwright's Chromium build.
+
+### Test the crawler
+
+Start the app:
+
+```bash
+npm run dev
+```
+
+Open the health endpoint:
+
+`http://localhost:5173/api/problem-statement/health`
+
+The health response shows whether Firecrawl is configured. If `firecrawlConfigured` is false, set the key in `.env` and restart Vite. To run both known-problem smoke tests after the server starts, open a second terminal and run `npm run test:crawler`.
+
+Then test a known problem:
+
+`http://localhost:5173/api/problem-statement?platform=Codeforces&id=2275B`
+
+For AtCoder, use an ID such as `ABC361-C`:
+
+`http://localhost:5173/api/problem-statement?platform=AtCoder&id=ABC361-C`
+
+Successful responses contain `success: true`, a sanitized `html` fragment, the title, source and cache status. The server caches statements for six hours to reduce requests. The endpoint only constructs URLs for valid Codeforces/AtCoder problem IDs; it does not accept arbitrary target URLs.
+
+## Problem catalogue sources
+
+### Codeforces metadata
+
+- `problemset.problems`
+- `contest.list?gym=false`
+- Official API documentation: https://codeforces.com/apiHelp
+
+The Codeforces API provides problem metadata, not full statement text. Catalogue responses are cached for 30 minutes and requests are spaced to respect the public API rate limit.
+
+### AtCoder metadata
+
+AtCoder Problems datasets:
+
+- `problems.json`
+- `contests.json`
+- `problem-models.json`
+- Documentation: https://github.com/kenkoooo/AtCoderProblems/blob/main/doc/api.md
+
+The datasets provide problem IDs, contest IDs, indices, timestamps and estimated difficulty. Responses are cached for 30 minutes.
+
+## Main features
+
+- Responsive dark/lavender interface with horizontal top navigation.
+- Contest dashboard with sticky filters and counts.
+- Codeforces divisions and AtCoder contest types.
+- Recent/Old, optional target difficulty, optional A/B/C… source-position filters, and manual problem IDs.
+- Optional target rating (`Any difficulty` is valid).
+- Required duration, start time and end time; immediate-start support.
+- Capital-letter contest labels A, B, C… independent of source problem indices.
+- Upcoming contest editing.
+- Problem identities visible by default; host can hide them until contest end.
+- Invite friends using a contest link/code/password UI (local prototype behavior; cross-device joining requires a backend).
+- Contest room with countdown/progress and Overview, Problem, Status, Rank, Discuss and Preference tabs.
+- In-app native statement reader powered by the server-side crawler, with an **Open original** fallback.
+- Unsolved/Upsolved tracking and profile activity heatmap.
+
+## Run locally
+
+Requirements: Node.js 18.17+ and npm. `cheerio@1.0.0` is pinned to keep Node 18.17 compatibility.
+
+```bash
+npm install
+cp .env.example .env
+# Add FIRECRAWL_API_KEY=fc-your-key-here to .env for managed crawling
+npm run setup:crawler
 npm run dev
 ```
 
@@ -31,44 +121,33 @@ npm run build
 npm run preview
 ```
 
-## Problem catalogue sources
+## Deploy on Render (production web service)
 
-Contest Stack uses public metadata sources for random problem generation. These sources provide IDs, names, indices, ratings/difficulty, tags and contest metadata—not problem statements.
+This release includes `server.js`, `server/contestStackApi.js`, and `render.yaml`. The API handlers are shared between Vite development and the production Express server. Production serves the built `dist/` frontend and binds to `0.0.0.0` using Render's `PORT`.
 
-### Codeforces
+### Deploy with Render Blueprint (recommended)
 
-- `problemset.problems`
-- `contest.list?gym=false`
-- Official API documentation: https://codeforces.com/apiHelp
+1. Push the project root to a GitHub repository.
+2. In Render, choose **New → Blueprint** and connect that repository.
+3. Render reads `render.yaml`; create the `contest-stack` web service.
+4. When prompted, enter `FIRECRAWL_API_KEY` from your Firecrawl dashboard. If you do not configure it, crawler fallbacks may still receive 403 responses from judge sites.
+5. Deploy. Render uses `npm install --include=dev && npm run build`, then `npm start`, and checks `/health`.
 
-The local Vite server proxies the allowed API methods to avoid browser CORS issues, tries the official mirror API first, validates the Codeforces `{ status: "OK" }` response envelope and caches successful metadata for 30 minutes. The browser-side generator spaces Codeforces API requests to respect the documented rate limit.
+### Deploy manually
 
-### AtCoder
+Create **New → Web Service**, connect the repository, and set:
 
-AtCoder Problems datasets:
+- Runtime: **Node**
+- Build command: `npm install --include=dev && npm run build`
+- Start command: `npm start`
+- Health check path: `/health`
+- Environment variables: `NODE_ENV=production` and `FIRECRAWL_API_KEY=<your Firecrawl key>`
 
-- `problems.json`
-- `contests.json`
-- `problem-models.json`
-- Dataset/API documentation: https://github.com/kenkoooo/AtCoderProblems/blob/main/doc/api.md
+Do not add `.env` to Git. Set secrets in Render's Environment page. The application listens on `process.env.PORT` and host `0.0.0.0`, as required for Render web services. The build command explicitly includes dev dependencies because Vite is needed to compile the frontend; the production runtime does not import Vite.
 
-The Vite server proxies only the known dataset paths and caches responses for 30 minutes. AtCoder datasets are plain JSON arrays/maps; they are not expected to contain a Codeforces-style `status` field.
+After deployment, verify `https://YOUR-SERVICE.onrender.com/health` and `https://YOUR-SERVICE.onrender.com/api/problem-statement/health`.
 
-## Main features
-
-- Responsive dark/lavender interface with horizontal top navigation.
-- Contest dashboard with sticky filters and counts.
-- Codeforces divisions and AtCoder contest types.
-- Recent/Old, optional target difficulty, optional A/B/C… source-position filters, and manual problem IDs.
-- Optional target rating (`Any difficulty` is valid).
-- Required duration, start time and end time; immediate-start support.
-- Capital-letter contest labels A, B, C… independent of the source problem index.
-- Upcoming contest editing.
-- Problem identities visible by default; host can hide them until contest end.
-- Invite friends using a contest link/code/password UI (local prototype behavior; cross-device joining requires a backend).
-- Enter contest room with countdown/progress and Overview, Problem, Status, Rank, Discuss and Preference tabs.
-- Original judge links open directly in a new tab; no statement preview/crawler/iframe.
-- Unsolved/Upsolved tracking and profile activity heatmap.
+Note: browser `localStorage` data remains local to each user's browser; contest links/invitations are not yet backed by shared authentication/database storage. The in-memory metadata/statement cache is per instance and is cleared when the service restarts.
 
 ## Data and limitations
 
@@ -77,14 +156,15 @@ The Vite server proxies only the known dataset paths and caches responses for 30
 - Status tracking is managed in Contest Stack; there is no submission/verdict integration with Codeforces or AtCoder.
 - Rank is not a live judge leaderboard.
 - Discussion notes are not yet a shared persistent discussion system.
-- Vite metadata proxy routes are for local development/preview. Production deployment needs equivalent backend/serverless routes for `/api/codeforces/*` and `/api/atcoder/resources/*`.
+- The Vite middleware serves local development/preview. In production, `server.js` mounts the same API routes through Express and serves the built frontend. A server-side `FIRECRAWL_API_KEY` is strongly recommended for anti-bot protected statement pages.
+- Firecrawl and the judge platforms are external dependencies. Their availability, anti-bot policies, rate limits and account/credit requirements are outside this app's control.
 
 ## Useful commands
 
 ```bash
 npm run check:server
+npm run setup:crawler
+npm run test:crawler
 npm run build
 npm run preview
 ```
-
-`check:server` checks Vite middleware and the problem catalogue/URL resolver JavaScript. Full real-browser testing should be performed after installing dependencies.

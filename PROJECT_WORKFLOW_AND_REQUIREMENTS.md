@@ -1,26 +1,26 @@
 # Contest Stack — Project Workflow & Requirements
 
 **Project:** Contest Stack  
-**Current package version:** `2.0.2`  
+**Current package version:** `2.1.1`  
 **Document status:** Product and technical reference  
 **Last updated:** 25 November 2026  
-**Specification updated:** Direct original-judge navigation is now the current problem-opening behavior.
+**Specification updated:** Problem statements are loaded through a server-side crawler and rendered inside Contest Stack, with an official-page fallback.
 
-**Current implementation:** React + Vite frontend, browser-local persistence, Vite server middleware for Codeforces and AtCoder problem-catalogue metadata.
+**Current implementation:** React + Vite frontend, browser-local persistence, Vite server middleware for Codeforces/AtCoder metadata and a server-side problem-statement crawler (Firecrawl Cloud managed proxy, local Playwright fallback, then direct server HTML).
 
 ---
 
 ## 1. Product overview
 
-Contest Stack is a personal competitive-programming practice workspace. It lets a user create scheduled or immediate practice contests using Codeforces or AtCoder problems, enter a contest room, open original judge problem pages directly, track unsolved and upsolved problems, invite friends, and review activity on a profile heatmap.
+Contest Stack is a personal competitive-programming practice workspace. It lets a user create scheduled or immediate practice contests using Codeforces or AtCoder problems, enter a contest room, read problem statements in an in-app native viewer, open original judge pages when needed, track unsolved and upsolved problems, invite friends, and review activity on a profile heatmap.
 
-The contest room follows familiar online-judge workflows (problem list, status, rank, discussion and preferences) while keeping Contest Stack's own dark/lavender visual identity. Problem entries open the original Codeforces or AtCoder page directly in a new browser tab. Contest Stack does not embed the judge website or scrape/render its problem page.
+The contest room follows familiar online-judge workflows (problem list, statement reader, status, rank, discussion and preferences) while keeping Contest Stack's own dark/lavender visual identity. Problem statements are fetched by the local server crawler and rendered as sanitized HTML inside Contest Stack. The official judge page remains available as a fallback link; the entire judge website is never embedded in an iframe.
 
 ### Product goals
 
 1. Make it easy to generate practice contests from real Codeforces and AtCoder problem catalogues.
 2. Keep contest creation flexible: problem IDs are optional, target rating is optional, and the number of problems is independent from the selected source indices.
-3. Keep the contest problem list accessible in Contest Stack and open the official judge page directly when a participant chooses a problem.
+3. Keep the contest problem list and sanitized statement accessible inside Contest Stack; retain the official judge page as a fallback link.
 4. Make it easy to revisit missed problems after a contest and distinguish unsolved from upsolved work.
 5. Support private practice sessions with friends through an invitation link or contest code and password.
 6. Show a profile-level view of contest consistency and practice history.
@@ -336,15 +336,16 @@ Displays contest title, state, duration, number of problems, unsolved count and 
 
 ### 7.2 Problem
 
-The Problem page contains the contest's ordered problem list. Each problem has an **Open original problem** link that opens the canonical Codeforces or AtCoder task URL in a new browser tab. The app does not show an in-app problem preview or iframe. The contest room and timer remain open in the original tab.
+The Problem page contains a left-side ordered problem rail and a native statement panel. Selecting a problem requests its official task URL through the server-side statement crawler. The server extracts only the statement container, sanitizes its HTML, and returns it to the client. The full judge website is never embedded. An **Open original** link remains available when a participant needs the official page or the crawler is blocked.
 
 The list includes:
 
 - Sequential capital labels A, B, C… in Contest Stack order.
 - Source platform and source problem index.
 - Problem name and ID when problem identities are visible.
-- A direct link to the original judge page.
-- No statement preview, statement-fetching request or iframe.
+- A native in-app statement reader with samples, constraints, notes and source formatting where provided.
+- A direct official-judge link as fallback.
+- No full-page iframe.
 
 ### 7.3 Status
 
@@ -393,34 +394,47 @@ The application waits between dataset accesses. Estimated difficulty is used for
 
 ### 8.3 Metadata versus judge page content
 
-Catalogue APIs provide metadata and difficulty. Contest Stack uses that metadata to construct official problem URLs. Full judge page content is served by the judge website when the participant opens the link; Contest Stack does not retrieve or render problem pages.
+Catalogue APIs provide metadata and difficulty, not the full problem statement. Contest Stack constructs a canonical official task URL from a validated problem ID. The server-side crawler then attempts to retrieve that page and extract only the problem statement. The client never sends an arbitrary URL to the server.
 
 ---
 
-## 9. Original judge links
+## 9. Server-side problem-statement crawler
 
-### 9.1 Link behavior
+### 9.1 Crawler order
 
-The app must not fetch, scrape, parse, embed or render problem pages. When a problem is opened, the browser navigates to the original Codeforces or AtCoder task page in a new tab. The Contest Stack tab stays open so the participant can return to the problem list and keep the contest timer visible.
+1. **Firecrawl Cloud (recommended for protected pages):** when `FIRECRAWL_API_KEY` is set in the server environment, POST to `https://api.firecrawl.dev/v2/scrape` with `formats: ["rawHtml"]` and `proxy: "auto"`. Firecrawl documents that auto proxy retries with enhanced proxy when the basic proxy fails. The server tries the Codeforces official page and its official mirror.
+2. **Local Playwright browser:** if Firecrawl is not configured or fails, use local Chrome/Chromium via Playwright to visit allowed canonical problem URLs and read the known statement container.
+3. **Basic server HTML request:** final fallback for pages that permit normal HTTP requests.
+4. If all sources fail, show a clear diagnostic and an **Open original** link. Never leave an infinite loading state.
 
-### 9.2 Canonical URL generation
+Firecrawl's API requires a server-side Bearer key. Never expose the key as a `VITE_` variable or put it in client code.
 
-Use a small URL resolver (`src/utils/problemUrl.js`) that derives official URLs from validated problem metadata:
+### 9.2 URL allowlist and extraction
 
-- Codeforces: `https://codeforces.com/contest/{contestId}/problem/{index}`
-- AtCoder: `https://atcoder.jp/contests/{contestId}/tasks/{contestId}_{taskIndex}`
+- Codeforces IDs must match `contestId + problemIndex`, for example `2275B`; the server derives `https://codeforces.com/contest/2275/problem/B`.
+- AtCoder IDs must match a supported contest/task shape, for example `ABC361-C`; the server derives `https://atcoder.jp/contests/abc361/tasks/abc361_c?lang=en`.
+- The API accepts platform and problem ID, not an arbitrary URL, to avoid turning the endpoint into an SSRF proxy.
+- Codeforces statement selector: `.problem-statement`.
+- AtCoder statement selector: `#task-statement .lang-en`, with `#task-statement` fallback.
+- Strip scripts, styles, forms, iframes, embeds and event attributes. Sanitize HTML on the server with an allowlist before rendering. Resolve relative images and links against the official task URL.
+- Cache successful statements for six hours and deduplicate concurrent requests for the same task.
+- Bound Firecrawl, Playwright and HTTP request durations. Return explicit HTTP/error diagnostics instead of an endless loading state.
+- Do not attempt to defeat access controls. A server crawler avoids browser CORS restrictions, but the target judge can still return 403. Firecrawl's managed enhanced proxy may improve success; it is optional and may consume account credits.
 
-Prefer the canonical official URL, not a mirror, proxy, metadata API proxy or third-party reader URL. Validate the final protocol and hostname before rendering the link. If a valid URL cannot be derived, show **Original link unavailable** rather than generating a guessed destination.
+### 9.3 Local development setup
 
-### 9.3 Security and behavior
+```bash
+npm install
+cp .env.example .env
+# Set FIRECRAWL_API_KEY=fc-your-key-here in .env
+npm run setup:crawler
+```
 
-- Render links as ordinary anchors with `target="_blank"` and `rel="noopener noreferrer"`.
-- Do not use `window.open` from delayed callbacks.
-- Do not send arbitrary URLs to a server proxy.
-- Keep problem metadata generation separate from external judge-page navigation.
-- The Codeforces and AtCoder catalogue endpoints remain rate-limited and cached independently of external judge pages.
+Copy `.env.example` to `.env` and add `FIRECRAWL_API_KEY` to enable Firecrawl Cloud. Start Vite after editing `.env`. The crawler health route is `/api/problem-statement/health`.
 
-There is no statement-crawler endpoint or health check because statement crawling is not part of the current product workflow.
+### 9.4 Original page fallback
+
+The statement panel includes a canonical official-judge link. It opens in a new browser tab with `target="_blank"` and `rel="noopener noreferrer"`. The Contest Stack tab and contest timer remain available.
 
 ## 10. Main data model
 
@@ -519,7 +533,7 @@ This section distinguishes the current code from production requirements.
 | Upcoming contest edit | Implemented | Cannot edit after contest has started |
 | Default problem-info visibility | Implemented | ON by default; frontend reveal after end |
 | Enter contest and timer | Implemented | Timer is derived from saved start/end timestamps |
-| Original judge problem links | Implemented | Opens canonical Codeforces/AtCoder pages in a new tab; no in-app preview or metadata API proxy |
+| Native statement viewer | Implemented in the current source | Server crawler with Firecrawl Cloud (optional), Playwright and direct HTML fallback; official link remains available |
 | CF/AtCoder catalogue proxy | Implemented | Vite server/preview middleware |
 | Invite code and password UI | Implemented locally | No cross-device sharing until backend is added |
 | Participant display list | Implemented locally | Names only; not authenticated accounts |
@@ -615,7 +629,7 @@ The heatmap should count clearly defined events per local calendar day and shoul
 
 - Cache problem metadata.
 - - Avoid downloading full catalogue datasets repeatedly in one session.
-- Avoid original judge navigation; problem links are opened directly on the official judge site.
+- Prefer cached sanitized statement content; keep the official judge link as a fallback when crawling is blocked.
 - Keep per-source request timeouts and an overall request deadline.
 
 ### Reliability
@@ -651,6 +665,8 @@ contest-stack/
 ├── package.json
 ├── vite.config.js
 ├── README.md
+├── .env.example
+├── .gitignore
 ├── PROJECT_WORKFLOW_AND_REQUIREMENTS.md
 └── src/
     ├── main.jsx
@@ -667,7 +683,8 @@ contest-stack/
     │   ├── ProfilePage.jsx
     │   └── Heatmap.jsx
     ├── services/
-    │   └── problemGenerator.js
+    │   ├── problemGenerator.js
+    │   └── problemStatement.js
     └── utils/
         └── contest.js
 ```
@@ -679,13 +696,15 @@ contest-stack/
 - `Sidebar.jsx`: top navigation and workspace menu/name.
 - `NewContestModal.jsx`: contest creation/edit form and generator orchestration.
 - `ContestCard.jsx`: dashboard card, status, problem tags and post-contest result controls.
-- `ContestRoom.jsx`: contest timer, tabs, problem list, direct original-judge links and room interactions.
+- `ContestRoom.jsx`: contest timer, tabs, problem rail, native statement viewer, official links and room interactions.
 - `InviteContestModal.jsx`: create/save/copy local invitation credentials.
 - `JoinContestModal.jsx`: collect invitation code, password and display name.
 - `ProfilePage.jsx`: local profile statistics and history.
 - `Heatmap.jsx`: last-year activity grid derived from contest records.
 - `problemGenerator.js`: Codeforces/AtCoder catalogue loading, filters, rating bands and random selection.
-- `vite.config.js`: Vite configuration and cached metadata API proxy routes for Codeforces and AtCoder.
+- `vite.config.js`: cached Codeforces/AtCoder metadata routes, statement crawler endpoint, HTML sanitization, Firecrawl managed proxy integration and Playwright fallback.
+- `src/services/problemStatement.js`: bounded client request and crawler timeout handling.
+- `scripts/test-crawler.mjs`: Codeforces and AtCoder crawler smoke tests.
 - `styles.css`: responsive visual system and component layout.
 
 ---
@@ -694,9 +713,9 @@ contest-stack/
 
 ### Prerequisites
 
-- Node.js version supported by Vite 6.
+- Node.js 18.17 or later (Cheerio is pinned to 1.0.0 for this compatibility target).
 - npm.
-- Internet access for Codeforces/AtCoder problem catalogues and for opening the original judge pages in a browser.
+- Internet access for Codeforces/AtCoder catalogues and problem pages. Install Playwright Chromium with `npm run setup:crawler`. Configure `FIRECRAWL_API_KEY` in `.env` to enable Firecrawl Cloud managed proxy crawling; otherwise 403 may persist.
 
 ### Install and run
 
@@ -704,14 +723,17 @@ From the project root:
 
 ```bash
 npm install
+cp .env.example .env
+# Set FIRECRAWL_API_KEY=fc-your-key-here in .env
+npm run setup:crawler
 npm run dev
 ```
 
 Open the local URL printed by Vite, normally `http://localhost:5173`. Keep the terminal and Vite server running while using the site.
 
-### Verify original problem links
+### Verify the statement crawler
 
-Create or open a contest and choose **Open original problem**. The link should open the canonical `codeforces.com` or `atcoder.jp` task page in a new tab. There is no problem URL resolver health endpoint because problem pages are not fetched by Contest Stack.
+Open `/api/problem-statement/health` and confirm `firecrawlConfigured: true`. Test Codeforces with `/api/problem-statement?platform=Codeforces&id=2275B` and AtCoder with `/api/problem-statement?platform=AtCoder&id=ABC361-C`. Run `npm run test:crawler` in a second terminal. Open a contest room and select a problem; the native statement panel should show loading, success or a bounded error with an **Open original** link.
 
 ### Check source syntax
 
@@ -719,7 +741,7 @@ Create or open a contest and choose **Open original problem**. The link should o
 npm run check:server
 ```
 
-This checks the Vite metadata API proxy, problem generator and official URL resolver.
+This checks the Vite metadata and crawler middleware syntax, problem generator, URL resolver and crawler smoke-test script syntax.
 
 ### Production build and local preview
 
@@ -774,11 +796,15 @@ A release should satisfy these observable workflows:
 
 - [ ] Problem information is visible by default.
 - [ ] If the host disables visibility, participant-facing IDs are hidden until contest end.
-- [ ] Selecting a problem opens its original Codeforces or AtCoder URL in a new tab.
-- [ ] The entire judge website is not loaded as an iframe.
+- [ ] Selecting a problem fetches its statement through `/api/problem-statement`.
+- [ ] The local Playwright browser fallback works after Chromium is installed.
+- [ ] The project displays whether Firecrawl is configured; protected Codeforces pages use managed Firecrawl proxy when a key is present.
+- [ ] Crawler smoke tests can be run for Codeforces 2275B and AtCoder ABC361-C.
+- [ ] Firecrawl Cloud is used when `FIRECRAWL_API_KEY` is configured.
+- [ ] Returned statement HTML is sanitized before it is rendered.
 - [ ] Previous/Next and left-side problem navigation work.
-- [ ] No problem page preview or iframe is rendered inside Contest Stack.
-- [ ] Problem links use canonical official judge URLs and open independently of Contest Stack.
+- [ ] No full-page judge website iframe is rendered inside Contest Stack.
+- [ ] The official judge link remains available as a fallback.
 
 ### Invitations and results
 
@@ -852,7 +878,7 @@ External judge websites control their own availability and access. Keep canonica
 
 1. Keep Contest Stack's independent dark/lavender visual identity; do not copy another judge's visual design wholesale.
 2. Use Codeforces and AtCoder as problem/catalogue sources, not as embedded full-page experiences.
-3. Open the canonical original Codeforces or AtCoder problem page directly, without an in-app preview or iframe.
+3. Load the problem statement with the server-side crawler; verify Firecrawl Cloud is configured for protected pages, confirm the sanitized native statement appears, and keep the original-page fallback available.
 4. Keep problem count independent from selected source positions.
 5. Keep target rating optional; Any difficulty must remain a valid default.
 6. Use capital-letter labels A, B, C… consistently in the Contest Stack contest order.

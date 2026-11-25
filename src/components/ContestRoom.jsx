@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft, CalendarDays, Clock3, Copy, ExternalLink, MessageSquare,
-  Settings2, Target, Trophy, Users, BookOpen, ListChecks, Medal, Info
+  Settings2, Target, Trophy, Users, BookOpen, ListChecks, Medal, Info,
+  RefreshCw, ChevronLeft, ChevronRight, LoaderCircle
 } from 'lucide-react';
 import { formatDateTime, formatDuration, getProblemLetters } from '../utils/contest.js';
 import { getOfficialProblemUrl } from '../utils/problemUrl.js';
+import { fetchProblemStatement } from '../services/problemStatement.js';
 
 const formatClock = (milliseconds) => {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -30,6 +32,9 @@ export default function ContestRoom({ contest, onBack, onClone }) {
   const [notice, setNotice] = useState('');
   const [discussion, setDiscussion] = useState('');
   const [comments, setComments] = useState([]);
+  const [selectedProblemKey, setSelectedProblemKey] = useState('');
+  const [statement, setStatement] = useState({ status: 'idle', html: '', title: '', error: '', source: '' });
+  const [statementRetry, setStatementRetry] = useState(0);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -60,6 +65,31 @@ export default function ContestRoom({ contest, onBack, onClone }) {
     contest.platform,
     problem?.detail || { id: problem?.id }
   );
+  const selectedProblem = problems.find((problem) => problem.key === selectedProblemKey) || problems[0] || null;
+
+  useEffect(() => {
+    if (!problems.length) {
+      setSelectedProblemKey('');
+      return;
+    }
+    setSelectedProblemKey((current) => problems.some((problem) => problem.key === current) ? current : problems[0].key);
+  }, [problems]);
+
+  useEffect(() => {
+    if (activeTab !== 'Problem' || hidden || !selectedProblem) {
+      setStatement({ status: 'idle', html: '', title: '', error: '', source: '' });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setStatement({ status: 'loading', html: '', title: '', error: '', source: '' });
+    fetchProblemStatement(contest.platform, selectedProblem.id, { signal: controller.signal })
+      .then((result) => setStatement({ status: 'ready', html: result.html, title: result.title || selectedProblem.detail?.name || selectedProblem.id, source: result.source || 'Server crawler', error: '' }))
+      .catch((error) => {
+        if (error.name !== 'AbortError') setStatement({ status: 'error', html: '', title: '', source: '', error: error.message || 'Could not load the problem statement.' });
+      });
+    return () => controller.abort();
+  }, [activeTab, hidden, contest.platform, selectedProblem?.id, selectedProblem?.key, statementRetry]);
   const cloneCurrentContest = () => {
     if (onClone) onClone(contest);
     else setNotice('Clone is not available in this workspace.');
@@ -105,41 +135,60 @@ export default function ContestRoom({ contest, onBack, onClone }) {
 
       {activeTab === 'Problem' && (
         <section className="room-tab-panel room-problems-section">
-          {hidden && <div className="inline-hint room-hidden-note">The host has hidden problem identities. They will be revealed when the contest ends.</div>}
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">PROBLEM SET</span>
-              <h2>Problems</h2>
-              <p>Open a problem on its original Codeforces or AtCoder page.</p>
-            </div>
-            <span className="history-total">{problems.length} total</span>
-          </div>
-          <div className="room-problem-list">
-            {problems.map((problem) => {
-              const { id, letter, detail } = problem;
-              const sourceIndex = String(detail?.index || problem.slot || letter).toUpperCase();
-              const sourceLabel = `${contest.platform === 'Codeforces' ? 'CF' : 'AtCoder'} ${sourceIndex}`;
-              const visibleId = String(id || '').toUpperCase();
-              const originalUrl = getProblemUrl(problem);
-              return (
-                <article className="room-problem-card" key={problem.key}>
-                  <div className="room-problem-letter">{letter}</div>
-                  <div className="room-problem-info">
-                    <b>Problem {letter}</b>
-                    {hidden ? <span>Problem details hidden</span> : <><span>{sourceLabel} · {visibleId}</span><small>{detail?.name || visibleId}</small></>}
+          {hidden ? (
+            <div className="inline-hint room-hidden-note">The host has hidden problem identities. They will be revealed when the contest ends.</div>
+          ) : !problems.length ? (
+            <div className="empty-state"><Trophy size={22} /><h3>No problems in this contest</h3><p>Return to the contest stack and edit the problem set.</p></div>
+          ) : (
+            <div className="room-problem-workspace">
+              <aside className="room-problem-rail">
+                <div className="room-problem-rail-heading"><span>CONTEST PROBLEMS</span><b>{problems.length}</b></div>
+                <div className="room-problem-rail-list">
+                  {problems.map((problem) => {
+                    const { id, letter, detail } = problem;
+                    const sourceIndex = String(detail?.index || problem.slot || letter).toUpperCase();
+                    return (
+                      <button type="button" key={problem.key} className={`room-problem-rail-item ${selectedProblem?.key === problem.key ? 'active' : ''}`} onClick={() => setSelectedProblemKey(problem.key)}>
+                        <span className="room-problem-letter">{letter}</span>
+                        <span className="room-problem-rail-copy"><b>Problem {letter}</b><small>{contest.platform === 'Codeforces' ? 'CF' : 'AtCoder'} {sourceIndex} · {String(id).toUpperCase()}</small></span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
+
+              <section className="room-statement-pane">
+                <header className="room-statement-toolbar">
+                  <div className="room-statement-current">
+                    <span className="room-problem-letter">{selectedProblem?.letter}</span>
+                    <div><b>Problem {selectedProblem?.letter}</b><small>{selectedProblem?.detail?.name || selectedProblem?.id}</small></div>
                   </div>
-                  {!hidden && (originalUrl ? (
-                    <a className="button secondary room-open-link" href={originalUrl} target="_blank" rel="noopener noreferrer">
-                      Open original problem <ExternalLink size={13} />
-                    </a>
-                  ) : (
-                    <button type="button" className="button secondary room-open-link" disabled title="A valid original problem URL is unavailable">Original link unavailable</button>
-                  ))}
-                </article>
-              );
-            })}
-            {!problems.length && <div className="empty-state"><Trophy size={22} /><h3>No problems in this contest</h3><p>Return to the contest stack and edit the problem set.</p></div>}
-          </div>
+                  <div className="room-statement-actions">
+                    <button type="button" className="icon-button" title="Previous problem" aria-label="Previous problem" disabled={problems.findIndex((item) => item.key === selectedProblem?.key) <= 0} onClick={() => setSelectedProblemKey(problems[Math.max(0, problems.findIndex((item) => item.key === selectedProblem?.key) - 1)].key)}><ChevronLeft size={16} /></button>
+                    <button type="button" className="icon-button" title="Next problem" aria-label="Next problem" disabled={problems.findIndex((item) => item.key === selectedProblem?.key) >= problems.length - 1} onClick={() => setSelectedProblemKey(problems[Math.min(problems.length - 1, problems.findIndex((item) => item.key === selectedProblem?.key) + 1)].key)}><ChevronRight size={16} /></button>
+                    {selectedProblem && getProblemUrl(selectedProblem) && <a className="icon-button" title="Open original problem" aria-label="Open original problem" href={getProblemUrl(selectedProblem)} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /></a>}
+                  </div>
+                </header>
+
+                <div className="room-statement-content">
+                  {statement.status === 'loading' && (
+                    <div className="room-statement-state"><LoaderCircle className="spin" size={24} /><b>Loading problem statement</b><p>Trying Firecrawl Cloud (if configured), then the local browser crawler and server fallback.</p></div>
+                  )}
+                  {statement.status === 'error' && (
+                    <div className="room-statement-state error"><Info size={23} /><b>Could not load this statement</b><p>{statement.error}</p><div className="room-statement-fallback-actions"><button type="button" className="button secondary" onClick={() => setStatementRetry((value) => value + 1)}><RefreshCw size={13} /> Try again</button>{selectedProblem && getProblemUrl(selectedProblem) && <a className="button primary" href={getProblemUrl(selectedProblem)} target="_blank" rel="noopener noreferrer">Open original <ExternalLink size={13} /></a>}</div></div>
+                  )}
+                  {statement.status === 'ready' && (
+                    <>
+                      <div className="room-statement-title-row"><div><span className="eyebrow">{contest.platform.toUpperCase()} · PROBLEM {selectedProblem?.letter}</span><h2>{statement.title}</h2><small>{selectedProblem?.id}</small></div>{selectedProblem && getProblemUrl(selectedProblem) && <a className="button secondary" href={getProblemUrl(selectedProblem)} target="_blank" rel="noopener noreferrer">Original statement <ExternalLink size={12} /></a>}</div>
+                      <article className="room-statement-html" dangerouslySetInnerHTML={{ __html: statement.html }} />
+                      <div className="room-statement-source">Fetched by {statement.source}</div>
+                    </>
+                  )}
+                  {statement.status === 'idle' && <div className="room-statement-state"><BookOpen size={22} /><b>Select a problem</b><p>Choose a problem from the list to load its statement.</p></div>}
+                </div>
+              </section>
+            </div>
+          )}
         </section>
       )}
 
